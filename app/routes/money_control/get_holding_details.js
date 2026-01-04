@@ -14,6 +14,21 @@ function cacheFilePath(isin) {
   return path.join(DATA_DIR, `${isin}.json`);
 }
 
+function formatData(data) {
+  let _data = data?.payload?.data;
+  if (Array.isArray(_data)) {
+    _data = _data.map((item) => {
+      return {
+        holdingPercentage: item.holdingPer,
+        investedAmount: item.investedAmount,
+        name: item.name,
+      };
+    });
+    return { holdings: _data };
+  }
+  return data;
+}
+
 function isExpired(meta) {
   if (!meta || !meta.validUntil) return true;
   const validUntilMs = new Date(meta.validUntil).getTime();
@@ -33,7 +48,11 @@ module.exports = async (req, res) => {
       const expired = isExpired(cached.meta);
       const needsRefresh = expired || force;
       if (!needsRefresh) {
-        return res.json({ ...cached, needsRefresh: false, source: "cache" });
+        return res.json({
+          ...formatData(cached),
+          needsRefresh: false,
+          source: "cache",
+        });
       }
     } catch (_) {
       // continue to live fetch
@@ -62,7 +81,20 @@ module.exports = async (req, res) => {
   try {
     const response = await axios.get(url, { params, headers, timeout: 15000 });
     const fetchedAt = new Date().toISOString();
-    const validUntil = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+
+    // Set validUntil to the 15th of current month, or 15th of next month if today is after the 15th
+    const now = new Date();
+    const currentMonth = now.getMonth();
+    const currentYear = now.getFullYear();
+    const day = now.getDate();
+
+    let validUntilDate;
+    if (day < 15) {
+      validUntilDate = new Date(currentYear, currentMonth, 15);
+    } else {
+      validUntilDate = new Date(currentYear, currentMonth + 1, 15);
+    }
+    const validUntil = validUntilDate.toISOString();
 
     const json = {
       meta: {
@@ -77,7 +109,7 @@ module.exports = async (req, res) => {
     };
 
     fs.writeFileSync(filePath, JSON.stringify(json, null, 2), "utf-8");
-    return res.json({ ...json, source: "live" });
+    return res.json({ ...formatData(json), source: "live" });
   } catch (err) {
     console.error(
       `Error fetching holding details for ISIN: ${isin}`,
@@ -87,9 +119,11 @@ module.exports = async (req, res) => {
     if (fs.existsSync(filePath)) {
       try {
         const cached = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-        return res
-          .status(200)
-          .json({ ...cached, source: "cache", error: "live_fetch_failed" });
+        return res.status(200).json({
+          ...formatData(cached),
+          source: "cache",
+          error: "live_fetch_failed",
+        });
       } catch (_) {}
     }
     return res
